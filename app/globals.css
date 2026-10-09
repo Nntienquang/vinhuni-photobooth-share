@@ -12,6 +12,8 @@ h1 { font-size: clamp(28px, 6vw, 44px); line-height: 1.2; letter-spacing: -.035e
 .photo { display: block; width: 100%; height: auto; border-radius: 9px; }
 .download { display: inline-flex; align-items: center; justify-content: center; min-height: 54px; width: 100%; max-width: 360px; padding: 16px 28px; border: 0; border-radius: 12px; background: #b9d5ff; color: #081426; font-size: 15px; font-weight: 800; letter-spacing: .08em; text-decoration: none; cursor: pointer; }
 .download:hover { background: #d5e5ff; }
+.photo-actions .download-secondary { background: transparent; border: 1px solid #a9caff; color: #b9d5ff; }
+.photo-actions .download:disabled { opacity: .6; cursor: wait; }
 a:focus-visible, button:focus-visible { outline: 3px solid #fff; outline-offset: 5px; }
 .text-link { color: #b9d5ff; text-underline-offset: 5px; }
 @media (min-width: 640px) { .shell { padding: 64px 32px; } .photo-frame { padding: 12px; } }

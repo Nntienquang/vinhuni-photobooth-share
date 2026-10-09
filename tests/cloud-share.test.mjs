@@ -26,7 +26,14 @@ const sharesModule = compile("lib/shares.ts");
 const { findShare, shareUrl, SHARE_ID_PATTERN } = await import(sharesModule);
 const { POST } = await import(compile("app/api/upload/route.ts", { "@/lib/shares": sharesModule }));
 const { GET: download } = await import(compile("app/api/download/[shareId]/route.ts", { "@/lib/shares": sharesModule }));
+const saverModule = compile("app/p/[shareId]/save-photo.ts");
+const { createPhotoSaver } = await import(saverModule);
+const actionsModule = compile("app/p/[shareId]/photo-actions.tsx", {
+  "./save-photo": saverModule,
+  "react": pathToFileURL(require.resolve("react")).href,
+});
 const { default: SharePage } = await import(compile("app/p/[shareId]/page.tsx", {
+  "./photo-actions": actionsModule,
   "@/lib/shares": sharesModule,
   "next/navigation": dataModule('export function notFound() { throw new Error("NOT_FOUND"); }'),
 }));
@@ -124,9 +131,10 @@ test("JPEG/PNG uploads preserve bytes and render the same original download URL"
     assert.ok(html.includes(`href="/api/download/${result.shareId}"`));
     assert.ok(!html.includes(`<a class="download" href="${stored.url}"`));
     assert.ok(!html.includes('target="_blank"'));
-    assert.ok(html.includes("Nếu trình duyệt không tự lưu vào Thư viện, hãy mở file đã tải xuống và chọn Lưu vào Ảnh."));
+    assert.ok(html.includes("Trên iPhone: chọn LƯU VÀO ẢNH, sau đó chọn Lưu hình ảnh trong bảng chia sẻ."));
     assert.ok(html.includes('download=""'));
-    assert.ok(html.includes("TẢI ẢNH"));
+    assert.ok(html.includes("TẢI FILE GỐC"));
+    assert.ok(html.includes("LƯU VÀO ẢNH"));
     assert.ok(!html.includes(key));
   }
 });
@@ -219,4 +227,71 @@ test("development base URL allows only loopback; production origin is fixed", ()
   assert.equal(shareUrl("id", "https://attacker.example/api/upload"), "https://vinhuni-photobooth-share.vercel.app/p/id");
   process.env.NODE_ENV = "production";
   assert.equal(shareUrl("id", "http://localhost:3000/api/upload"), "https://vinhuni-photobooth-share.vercel.app/p/id");
+});
+
+test("native photo sharing preserves JPEG/PNG bytes and uses the download endpoint", async () => {
+  const previous = globalThis.fetch;
+  try {
+    for (const type of ["image/jpeg", "image/png"]) {
+      const bytes = Buffer.from([0, 1, 127, 128, 255]);
+      globalThis.fetch = async (url) => {
+        assert.equal(url, "/api/download/test-id");
+        return new Response(bytes, { headers: { "Content-Type": type } });
+      };
+      let shared;
+      const save = createPhotoSaver("/api/download/test-id", "test-id");
+      await save({ canShare: ({ files }) => files[0].type === type, share: async data => { shared = data; } }, () => assert.fail("Unexpected fallback"));
+      assert.equal(shared.title, "VINHUNI PHOTOBOOTH");
+      assert.equal(shared.files[0].type, type);
+      assert.equal(shared.files[0].name, `VINHUNI-PHOTOBOOTH-test-id.${type === "image/png" ? "png" : "jpg"}`);
+      assert.deepEqual(Buffer.from(await shared.files[0].arrayBuffer()), bytes);
+    }
+  } finally { globalThis.fetch = previous; }
+});
+
+test("photo sharing falls back when unsupported, but not when cancelled", async () => {
+  const previous = globalThis.fetch;
+  let downloads = 0;
+  const fallback = () => { downloads++; };
+  try {
+    globalThis.fetch = async () => new Response("original", { headers: { "Content-Type": "image/jpeg" } });
+    await createPhotoSaver("/api/download/id", "id")({}, fallback);
+    assert.equal(downloads, 1);
+    await createPhotoSaver("/api/download/id", "id")({ canShare: () => false, share: () => assert.fail("Unexpected share") }, fallback);
+    assert.equal(downloads, 2);
+    await createPhotoSaver("/api/download/id", "id")({ share: async () => { throw new DOMException("cancel", "AbortError"); } }, fallback);
+    assert.equal(downloads, 2);
+    await createPhotoSaver("/api/download/id", "id")({ share: async () => { throw new TypeError("unsupported files"); } }, fallback);
+    assert.equal(downloads, 3);
+  } finally { globalThis.fetch = previous; }
+});
+
+test("slow fetch permits a second tap with fresh activation and no refetch", async () => {
+  const previous = globalThis.fetch;
+  let fetches = 0;
+  let shares = 0;
+  const activation = { isActive: false };
+  try {
+    globalThis.fetch = async () => {
+      fetches++;
+      return new Response("original", { headers: { "Content-Type": "image/png" } });
+    };
+    const save = createPhotoSaver("/api/download/id", "id");
+    const browser = { userActivation: activation, canShare: () => true, share: async () => { shares++; } };
+    assert.match(await save(browser, () => assert.fail("Unexpected fallback")), /lần nữa/);
+    assert.equal(shares, 0);
+    activation.isActive = true;
+    await save(browser, () => assert.fail("Unexpected fallback"));
+    assert.equal(shares, 1);
+    assert.equal(fetches, 1);
+  } finally { globalThis.fetch = previous; }
+});
+
+test("failed image fetch reports retry without sharing error content", async () => {
+  const previous = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => new Response("upstream error", { status: 502 });
+    const message = await createPhotoSaver("/api/download/id", "id")({ share: () => assert.fail("Unexpected share") }, () => assert.fail("Unexpected fallback"));
+    assert.match(message, /Vui lòng thử lại/);
+  } finally { globalThis.fetch = previous; }
 });
