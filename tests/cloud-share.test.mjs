@@ -25,6 +25,7 @@ function compile(path, replacements = {}) {
 const sharesModule = compile("lib/shares.ts");
 const { findShare, shareUrl, SHARE_ID_PATTERN } = await import(sharesModule);
 const { POST } = await import(compile("app/api/upload/route.ts", { "@/lib/shares": sharesModule }));
+const { GET: download } = await import(compile("app/api/download/[shareId]/route.ts", { "@/lib/shares": sharesModule }));
 const { default: SharePage } = await import(compile("app/p/[shareId]/page.tsx", {
   "@/lib/shares": sharesModule,
   "next/navigation": dataModule('export function notFound() { throw new Error("NOT_FOUND"); }'),
@@ -120,10 +121,62 @@ test("JPEG/PNG uploads preserve bytes and render the same original download URL"
     assert.equal((await findShare(result.shareId)).url, stored.url);
     const html = renderToStaticMarkup(await SharePage({ params: Promise.resolve({ shareId: result.shareId }) }));
     assert.ok(html.includes(`src="${stored.url}"`));
-    assert.ok(html.includes(`href="${stored.url}"`));
+    assert.ok(html.includes(`href="/api/download/${result.shareId}"`));
+    assert.ok(!html.includes(`<a class="download" href="${stored.url}"`));
+    assert.ok(!html.includes('target="_blank"'));
+    assert.ok(html.includes("Nếu trình duyệt không tự lưu vào Thư viện, hãy mở file đã tải xuống và chọn Lưu vào Ảnh."));
     assert.ok(html.includes('download=""'));
     assert.ok(html.includes("TẢI ẢNH"));
     assert.ok(!html.includes(key));
+  }
+});
+test("download streams identical JPEG/PNG bytes with attachment headers", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    for (const extension of ["jpg", "png"]) {
+      const item = [...store.values()].find(item => item.pathname.endsWith(`.${extension}`));
+      const shareId = item.pathname.split("/")[1];
+      const body = new ReadableStream({ start(controller) {
+        controller.enqueue(item.bytes.subarray(0, 10));
+        controller.enqueue(item.bytes.subarray(10));
+        controller.close();
+      } });
+      globalThis.fetch = async (url, options) => {
+        assert.equal(url, item.url);
+        assert.equal(options.cache, "no-store");
+        return new Response(body);
+      };
+      const response = await download(new Request("https://example.com"), { params: Promise.resolve({ shareId }) });
+      assert.equal(response.status, 200);
+      assert.equal(response.body, body);
+      assert.equal(response.headers.get("Content-Type"), extension === "png" ? "image/png" : "image/jpeg");
+      assert.equal(response.headers.get("Content-Disposition"), `attachment; filename="VINHUNI-PHOTOBOOTH-${shareId}.${extension}"`);
+      assert.equal(response.headers.get("Cache-Control"), "private, no-store");
+      assert.deepEqual(Buffer.from(await response.arrayBuffer()), item.bytes);
+    }
+  } finally { globalThis.fetch = originalFetch; }
+});
+test("download returns 404 for invalid/missing IDs and sanitizes upstream failures", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalList = globalThis.__blob.list;
+  const call = shareId => download(new Request("https://example.com"), { params: Promise.resolve({ shareId }) });
+  try {
+    globalThis.fetch = async () => { throw new Error("Should not fetch absent shares"); };
+    for (const id of ["invalid", "00000000-0000-4000-8000-000000000000"]) {
+      assert.equal((await call(id)).status, 404);
+    }
+    const id = [...store.values()][0].pathname.split("/")[1];
+    globalThis.fetch = async () => new Response(null, { status: 404 });
+    assert.equal((await call(id)).status, 404);
+    globalThis.fetch = async () => new Response("private upstream detail", { status: 500 });
+    const failed = await call(id);
+    assert.equal(failed.status, 502);
+    assert.deepEqual(await failed.json(), { error: "Download unavailable" });
+    globalThis.__blob.list = async () => { throw new Error("private storage detail"); };
+    assert.equal((await call(id)).status, 502);
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.__blob.list = originalList;
   }
 });
 test("invalid and absent shares produce not-found; lookup matches exact path and paginates", async () => {

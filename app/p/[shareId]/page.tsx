@@ -19,8 +19,9 @@ export default async function SharePage({ params }: { params: Promise<{ shareId:
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img className="photo" src={image.url} alt="Ảnh của bạn tại VINHUNI PHOTOBOOTH" />
       </figure>
-      <a className="download" href={image.url} download target="_blank" rel="noopener noreferrer">TẢI ẢNH</a>
+      <a className="download" href={`/api/download/${shareId}`} download>TẢI ẢNH</a>
       <p className="muted">Nhấn để lưu ảnh chất lượng gốc về thiết bị.</p>
+      <p className="muted">Nếu trình duyệt không tự lưu vào Thư viện, hãy mở file đã tải xuống và chọn Lưu vào Ảnh.</p>
     </main>
   );
 }
